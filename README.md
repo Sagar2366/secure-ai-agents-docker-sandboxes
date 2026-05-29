@@ -11,6 +11,8 @@
 - Agents run with YOUR credentials, filesystem, and network access
 - Your laptop is the new prod — with zero security boundaries
 
+![The problem — agents need permissions to work](images/claude-code-permissions.png)
+
 **This isn't hypothetical.** NVIDIA's AI red team published CVE-2024-12366 — a documented case of AI-generated code escalating into remote code execution when there's no proper isolation. Two security tools (Trivy, KICS) were supply-chain-compromised in Q1 2026 via stolen credentials.
 
 The tradeoff AI agents have imposed: limit access and the agent becomes not-so-autonomous. Give full access and it's a security nightmare. Docker Sandboxes breaks that compromise — full autonomy inside hard boundaries.
@@ -24,6 +26,8 @@ Give your AI agent its own **burner laptop**. It can install whatever it wants, 
 Each sandbox is an isolated microVM with its own kernel, Docker daemon, filesystem, and network stack. On Mac, that's Apple's Virtualization Framework. On Windows, Hyper-V. Actual hypervisor-level isolation.
 
 **You don't need Docker Desktop.** The `sbx` CLI is standalone.
+
+![Sandbox Security Architecture — hypervisor boundary between sandbox VM and host](images/sandbox-architecture.png)
 
 ### How they work
 
@@ -92,6 +96,8 @@ sbx run shell           # Plain shell (for demos)
 ```
 
 Agent starts in YOLO mode — no permission prompts. It can only see `/workspace/`.
+
+![sbx TUI dashboard — status, network requests, memory usage](images/sbx-dashboard.png)
 
 ### Key commands
 
@@ -331,96 +337,6 @@ sbx rm <sandbox-name>
 
 ---
 
-## Local Models (LM Studio / Ollama)
-
-Local models are less capable than frontier models — MORE likely to make mistakes, run destructive commands, or follow malicious instructions. Sandboxing them is arguably more important than sandboxing frontier models.
-
-### With Ollama
-
-Ollama serves models on `localhost:11434` by default.
-
-```bash
-# 1. Start Ollama on your host (if not already running)
-ollama serve
-
-# 2. Pull a model
-ollama pull qwen3:8b
-
-# 3. Allow sandbox to reach Ollama
-sbx policy allow network -g localhost:11434
-
-# 4. Create sandbox with Codex pointing to Ollama
-sbx create --name codex-ollama codex .
-sbx exec codex-ollama -- codex \
-  --provider openai \
-  --model qwen3:8b \
-  --api-url http://host.docker.internal:11434/v1
-
-# Or with Claude Code pointing to Ollama
-sbx create --name claude-ollama claude .
-sbx exec claude-ollama -- claude \
-  --model qwen3:8b \
-  --api-url http://host.docker.internal:11434/v1
-```
-
-Ollama exposes an OpenAI-compatible API at `/v1`, so any agent that supports custom endpoints works out of the box.
-
-### Key points for local models
-
-- Use `host.docker.internal` (not `localhost`) — that's how the sandbox reaches your host
-- The `sbx policy allow network -g localhost:<port>` rule opens only that specific port
-- Your model weights stay on your host — only API calls cross the sandbox boundary
-- Zero API costs, full privacy, full isolation
-
----
-
-## Customization
-
-Sandbox VM is built from a Dockerfile. Customize your tooling:
-
-```dockerfile
-FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y git curl nodejs npm \
-    && npx playwright install --with-deps chromium
-```
-
-Teach agents to use custom tools via project skills (`CLAUDE.md`, `.cursorrules`).
-
----
-
-## What the Sandbox Does NOT Protect
-
-Your **project files are fully writable**. The agent CAN delete or overwrite your code.
-
-The sandbox protects your **system**. It does NOT protect your **project**.
-
-**Mitigation:** Commit often. Use `--branch` mode for risky tasks.
-
----
-
-## Resource Overhead
-
-| | Container | Docker Sandbox |
-|--|-----------|----------------|
-| Disk | ~tens of MB | ~5–6 GB |
-| Memory | Shared | 4 GB per sandbox |
-
-Running multiple agents in parallel adds up fast. Only sandbox agents that need guardrails.
-
----
-
-## AI Governance (Enterprise)
-
-| Control | What it governs |
-|---------|----------------|
-| Sandbox Policy | Network + filesystem rules |
-| Credential Governance | Session-scoped tokens, exfiltration blocking |
-| MCP Tool Governance | Approved servers only |
-| Role-Based Policy | SAML/SCIM, team-specific rules |
-| Audit & Visibility | Every action logged → SIEM |
-
----
-
 ## Takeaway: The 3Cs
 
 | C | Principle | How |
@@ -428,21 +344,6 @@ Running multiple agents in parallel adds up fast. Only sandbox agents that need 
 | **Contain** | Limit what agents reach | `sbx run` (microVM) |
 | **Control** | Govern what agents do | Network + MCP policies |
 | **Clarity** | See what agents did | `sbx policy log` |
-
----
-
-## Known Gotchas
-
-| Issue | Workaround |
-|-------|------------|
-| ~5-6 GB disk per sandbox | Only sandbox what needs guardrails |
-| 4 GB memory per sandbox | Watch resources with multiple agents |
-| No SSH-agent/1Password | Unsigned commits → rebase-sign locally |
-| macOS requires Apple Silicon | Intel not supported |
-| Windows support experimental | Use at own risk |
-| Linux: container-based (weaker) | microVM only on Mac/Windows |
-| Env var change = recreate sandbox | Loses conversation history |
-| Project files fully writable | Commit early, push often |
 
 ---
 
