@@ -1,0 +1,12 @@
+Review the checkout service (src/checkout/) for observability gaps.
+
+Steps:
+1. Read the checkout service source code
+2. Identify any missing OpenTelemetry instrumentation:
+   - Are all outbound gRPC calls to other services traced?
+   - Are errors recorded as span events with stack traces?
+   - Are there any untraced code paths (database calls, cache reads)?
+   - Are span attributes meaningful (order ID, user ID, item count)?
+3. Add the missing instrumentation
+4. Verify the service still builds: `docker compose build checkout`
+5. Commit with a message listing what was added

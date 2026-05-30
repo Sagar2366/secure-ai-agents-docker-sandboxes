@@ -1,237 +1,438 @@
-# Secure AI Coding Agents with Docker Sandboxes
+# Docker Sandboxes: A Hands-On Guide with the OpenTelemetry Demo
 
-> By Sagar Utekar — Docker Captain | Senior SRE, CrowdStrike | CNCF Ambassador
-
----
-
-## Why This Matters
-
-- 25% of production code is now AI-authored
-- Developers using agents merge 60% more PRs
-- Agents run with YOUR credentials, filesystem, and network access
-- Your laptop is the new prod — with zero security boundaries
-
-![The problem — agents need permissions to work](images/claude-code-permissions.png)
-
-**This isn't hypothetical.** NVIDIA's AI red team published CVE-2024-12366 — a documented case of AI-generated code escalating into remote code execution when there's no proper isolation. Two security tools (Trivy, KICS) were supply-chain-compromised in Q1 2026 via stolen credentials.
-
-The tradeoff AI agents have imposed: limit access and the agent becomes not-so-autonomous. Give full access and it's a security nightmare. Docker Sandboxes breaks that compromise — full autonomy inside hard boundaries.
+> **Status**: This guide covers the Docker Sandboxes `sbx` release as of its experimental launch.
 
 ---
 
-## What Are Docker Sandboxes?
+## What you'll need
 
-Give your AI agent its own **burner laptop**. It can install whatever it wants, spin up containers, do damage inside — your actual machine stays completely untouched.
+- A paid Claude subscription (or any supported agent API key)
+- A GitHub account with a token that has permissions to push and pull
+- macOS on Apple Silicon or Windows 11
 
-Each sandbox is an isolated microVM with its own kernel, Docker daemon, filesystem, and network stack. On Mac, that's Apple's Virtualization Framework. On Windows, Hyper-V. Actual hypervisor-level isolation.
+## What you'll learn
 
-**You don't need Docker Desktop.** The `sbx` CLI is standalone.
+By the end of this guide you'll be able to:
 
-![Sandbox Security Architecture — hypervisor boundary between sandbox VM and host](images/sandbox-architecture.png)
+- Install and configure the `sbx` CLI
+- Run Claude autonomously inside an isolated microVM sandbox
+- Store credentials securely and have them injected automatically
+- Use branch mode to let Claude work on its own Git branch
+- Run Docker Compose inside the sandbox (private Docker daemon)
+- Forward live ports from a sandbox to your browser
+- Manage network policies so the agent can only reach what you allow
+- Prove isolation: your host stays completely untouched
 
-### How they work
-
-`sbx run claude` →
-1. Boots a microVM with a dedicated kernel
-2. Mounts only your project workspace (read-write)
-3. Starts an isolated Docker daemon inside
-4. Routes all network through a policy-enforcing proxy
-5. Injects credentials at proxy level — never visible inside the sandbox
-6. Launches agent in full autonomous mode (no permission prompts)
-
-### Four layers of isolation
-
-| Layer | What it does |
-|-------|-------------|
-| VM isolation | Separate kernel — can't touch yours |
-| Private Docker | Agent builds/runs containers with zero visibility into host Docker |
-| Network isolation | Can't reach localhost or other sandboxes; outbound goes through filtering proxy |
-| Filesystem isolation | Only workspace syncs; ~/.ssh, ~/.aws, other projects invisible |
-
-### Why not containers?
-
-Docker started with containers for this but moved away:
-
-- **Shared kernel** — kernel exploit inside container hits your host OS
-- **Docker-in-Docker problem** — agents need Docker access. Options: privileged mode (tears down isolation) or mount host socket (gives full access to everything). Both bad.
-
-MicroVMs solve both: dedicated kernel + private Docker daemon.
+The guide uses the **OpenTelemetry Astronomy Shop** — a microservice-based
+e-commerce system with 10+ services in Go, Python, TypeScript, C++, .NET, and
+more. It runs via Docker Compose with Kafka, PostgreSQL, Redis, Prometheus,
+Grafana, and Jaeger. Real-world complexity that justifies sandboxing.
 
 ---
 
-## Setup
+## Table of contents
+
+1. [How Docker Sandboxes work](#1-how-docker-sandboxes-work)
+2. [Clone this repo](#2-clone-this-repo)
+3. [Installation](#3-installation)
+4. [Secrets and credentials](#4-secrets-and-credentials)
+5. [Create your sandbox](#5-create-your-sandbox)
+6. [Orient yourself](#6-orient-yourself)
+7. [The interactive TUI dashboard](#7-the-interactive-tui-dashboard)
+8. [Explore the architecture](#8-explore-the-architecture)
+9. [Docker Compose inside the sandbox](#9-docker-compose-inside-the-sandbox)
+10. [Port forwarding with `sbx ports`](#10-port-forwarding-with-sbx-ports)
+11. [Network policies](#11-network-policies)
+12. [Branch mode](#12-branch-mode)
+13. [Attack simulation](#13-attack-simulation)
+14. [Debugging with `sbx exec`](#14-debugging-with-sbx-exec)
+15. [Appendix A: Prompt library](#appendix-a-prompt-library)
+16. [Appendix B: CLI quick reference](#appendix-b-cli-quick-reference)
+
+---
+
+## 1. How Docker Sandboxes work
+
+When you run `sbx run claude`, Docker Sandboxes:
+
+1. Spins up a **lightweight microVM** — its own Linux kernel, not just a container namespace.
+2. Gives the VM a **private Docker daemon**, so Claude can run `docker build` or `docker compose up` without touching your host Docker.
+3. **Mounts your workspace directory** at its exact host path inside the VM. File changes are instant in both directions — no copy-on-write delay.
+4. Routes all HTTP/HTTPS traffic from the VM through a **host-side proxy** that enforces your network policy and injects API credentials. Claude never sees raw credentials.
+5. Starts Claude with `--dangerously-skip-permissions` so it can act autonomously without prompting you on every file change.
+
+The result: Claude can build images, install packages, run tests, and edit your code —
+and none of that can escape the VM to touch your host system, your other containers,
+or any network destination you haven't explicitly allowed.
+
+```
+Your machine
+├── Host Docker daemon    ← your stuff, untouched
+├── Host filesystem       ← workspace dir shared (read/write); nothing else
+│
+└── Sandbox (microVM)
+    ├── Private Docker daemon  ← Claude builds here
+    ├── /your/workspace        ← live-mounted from host
+    └── Outbound HTTP proxy    ← enforces network policy, injects creds
+```
+
+---
+
+## 2. Clone this repo
 
 ```bash
-# Install (macOS)
+git clone https://github.com/Sagar2366/secure-ai-agents-docker-sandboxes.git
+cd secure-ai-agents-docker-sandboxes
+```
+
+The `opentelemetry-demo/` directory contains the full Astronomy Shop source code —
+10+ microservices, Docker Compose files, and observability config.
+
+---
+
+## 3. Installation
+
+> Docker Desktop is **not** required to run `sbx`
+
+### macOS (Apple Silicon required)
+
+```bash
 brew install docker/tap/sbx
-
-# Install (Windows — enable HypervisorPlatform first)
-winget install -h Docker.sbx
-
-# Install (Linux)
-sudo apt-get install docker-sbx
-sudo usermod -aG kvm $USER && newgrp kvm
-
-# Login
-sbx login
-
-# Store API key (saved in OS keychain, never in sandbox)
-sbx secret set ANTHROPIC_API_KEY
 ```
 
-First login prompts for a network policy: **Open** | **Balanced** (recommended) | **Locked Down**
+### Windows (x86_64, Windows 11 required)
 
----
+```powershell
+Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All
+# Restart when prompted
+winget install -h Docker.sbx
+```
 
-## Running Agents
+### Sign in
 
 ```bash
-cd ~/projects/my-app
-sbx run claude          # Claude Code
-sbx run codex           # OpenAI Codex
-sbx run copilot         # GitHub Copilot
-sbx run gemini          # Gemini CLI
-sbx run kiro            # Kiro
-sbx run shell           # Plain shell (for demos)
+sbx login
 ```
 
-Agent starts in YOLO mode — no permission prompts. It can only see `/workspace/`.
+### Set default network policy
 
-![sbx TUI dashboard — status, network requests, memory usage](images/sbx-dashboard.png)
+On your first run the daemon prompts you to choose a network policy:
 
-### Key commands
+```
+Choose a default network policy:
 
-| Command | What it does |
-|---------|-------------|
-| `sbx` | TUI dashboard (status, network, firewall) |
-| `sbx ls` | List sandboxes |
-| `sbx exec <name> -- bash` | Shell into running sandbox |
-| `sbx stop <name>` | Pause |
-| `sbx rm <name>` | Destroy |
-| `sbx policy ls` | View network rules |
-| `sbx policy log` | Audit: allowed + blocked requests |
-| `sbx policy allow network -g <domain>` | Allowlist a domain |
-| `sbx ports publish <name> 3000` | Forward port to host |
-| `sbx run claude --branch feature-x` | Git worktree isolation |
-| `sbx secret set <KEY>` | Store credential |
-| `sbx save` | Snapshot as template |
+     1. Open         — All network traffic allowed, no restrictions.
+     2. Balanced     — Default deny, with common dev sites allowed.
+     3. Locked Down  — All network traffic blocked unless you allow it.
+
+  Use ↑/↓ to navigate, Enter to select, or press 1–3.
+```
+
+Choose **Balanced** for this guide. It allows AI provider APIs, package managers,
+Docker Hub, GitHub, and container registries out of the box.
 
 ---
 
-## The Workflow
+## 4. Secrets and credentials
 
-1. `sbx run claude` — agent starts in isolated microVM
-2. Turn it loose on any task — it works autonomously
-3. Changes sync to your real project directory (bidirectional, paths preserved)
-4. `sbx policy log` — see everything it did
-5. `sbx rm` — sandbox gone, code stays
+`sbx` has a built-in secrets manager that stores credentials in your OS keychain —
+never in plain text on disk or inside the VM. When Claude makes an outbound request
+that needs authentication, the host-side proxy intercepts it and injects the credential
+automatically. Claude can make authenticated API calls but can never read, log, or
+exfiltrate the raw credential.
 
-The sandbox is invisible to `docker ps`. It's a separate management plane.
+```bash
+# Store GitHub token (global — available to all sandboxes)
+echo "$(gh auth token)" | sbx secret set -g github
+
+# Verify
+sbx secret ls
+```
+
+> **Important**: global secrets must be set before a sandbox is created. They are
+> injected at creation time and cannot be added retroactively to a running sandbox.
+
+### Supported services
+
+| Service     | Environment variable(s)                       | API domain(s)                       |
+|-------------|-----------------------------------------------|-------------------------------------|
+| `anthropic` | `ANTHROPIC_API_KEY`                           | `api.anthropic.com`                 |
+| `openai`    | `OPENAI_API_KEY`                              | `api.openai.com`                    |
+| `github`    | `GH_TOKEN`, `GITHUB_TOKEN`                    | `api.github.com`, `github.com`      |
+| `google`    | `GEMINI_API_KEY`, `GOOGLE_API_KEY`            | `generativelanguage.googleapis.com` |
 
 ---
 
-## Demo 1: Agent Works on a Real Microservices App — Safely
-
-**What you're showing:** An agent explores, builds, and fixes a complex microservices app (OpenTelemetry Astronomy Shop) — all inside a sandbox. Your host stays untouched. Then you prove isolation.
-
-### The demo app: OpenTelemetry Demo
-
-This repo includes `opentelemetry-demo/` — the official [OpenTelemetry Astronomy Shop](https://github.com/open-telemetry/opentelemetry-demo). A microservice-based e-commerce system with 10+ services in Go, Python, TypeScript, .NET, and more. Docker Compose, Kafka, PostgreSQL, Redis, Prometheus, Grafana, Jaeger — the works.
-
-This is exactly the kind of complex project where an agent needs real autonomy: installing dependencies, building containers, running services, modifying code across multiple languages.
-
-### Flow
-
-**Step 1 — Launch the sandbox**
+## 5. Create your sandbox
 
 ```bash
 cd opentelemetry-demo
-sbx run claude
+sbx create --name=otel-demo claude .
 ```
 
-> *Note: First run pulls the image (~1 min). After that it's seconds.*
-> Point out: agent boots in YOLO mode — no permission prompts.
+Confirm it was created:
 
-**Step 2 — Give the agent a real task**
+```bash
+sbx ls
+```
+
+Now attach to it:
+
+```bash
+sbx run otel-demo
+```
+
+### Log in to Claude
+
+Once the sandbox starts, authenticate with:
+
+```
+/login
+```
+
+> **Note**: Copy the login URL manually if the browser doesn't open automatically.
+> Complete the OAuth flow and paste the returned code back. You only need to do this once.
+
+---
+
+## 6. Orient yourself
+
+Give Claude the following prompt:
 
 ```
 Explore this codebase and give me:
 1. A summary of the architecture and tech stack
-2. How to run it locally using Docker Compose
-3. Start the full stack with `docker compose up`
-4. Once healthy, confirm the frontend is accessible at localhost:8080
+2. List all microservices with their language and role
+3. How to run it locally using Docker Compose
+4. What observability tools are included (tracing, metrics, logs)
 ```
 
-> *Note: The agent will read compose files, understand the architecture, run `docker compose up --build`, and verify services. It's building containers, pulling images, starting Kafka/Postgres/Redis — all inside the sandbox's private Docker daemon. Let it work uninterrupted.*
+Claude will read compose files, source directories, and report back. Because the
+workspace is mounted directly into the VM, Claude sees your actual files — including
+any changes you make on the host while it's running.
 
-**Step 3 — While agent works, open a second terminal and prove isolation**
+### Controlling the session
+
+- Press **`Ctrl-C` twice** to exit the session and drop back to your host terminal.
+- Type **`!`** before any command inside Claude to run it as a shell command — e.g. `!ls` or `!docker ps`.
+
+---
+
+## 7. The interactive TUI dashboard
+
+Running `sbx` with no arguments opens the TUI.
 
 ```bash
-# Your host: agent's sandbox is invisible to Docker
-docker ps
-# → Nothing. Sandbox doesn't show here.
-
-# List sandboxes (separate management plane)
-sbx ls
-# → Shows sandbox RUNNING
-
-# Check what the agent can see vs your host
-# On your HOST:
-ls ~/.aws ~/.ssh ~/.docker 2>/dev/null
-# → Your credentials, SSH keys, Docker config — all here
-
-# Now shell INTO the sandbox:
-sbx exec <sandbox-name> -- bash -c "ls ~/.aws ~/.ssh ~/.docker 2>&1"
-# → "No such file or directory" for ALL of them
-
-# Agent has its own Docker daemon — check from inside:
-sbx exec <sandbox-name> -- docker ps
-# → 10+ running containers (frontend, cart, checkout, etc.)
-# But YOUR host docker ps shows nothing.
+sbx
 ```
 
-> *Note: This is the money shot. The agent is running a full microservices platform with Kafka, Postgres, Redis — but your host Docker is completely empty. Two separate worlds.*
+The dashboard shows all sandboxes as cards with live CPU and memory usage.
 
-**Step 4 — Check network audit**
+| Key     | Action                                               |
+|---------|------------------------------------------------------|
+| `c`     | Create a new sandbox                                 |
+| `s`     | Start or stop the selected sandbox                   |
+| `Enter` | Attach to the agent session (same as `sbx run`)      |
+| `x`     | Open a shell inside the sandbox (`sbx exec`)         |
+| `r`     | Remove the selected sandbox                          |
+| `Tab`   | Switch between the Sandboxes panel and Network panel |
+| `?`     | Show all shortcuts                                   |
+
+The **Network panel** (press `Tab`) shows a live log of every outbound connection the
+sandbox makes — which hosts were reached, which were blocked.
+
+---
+
+## 8. Explore the architecture
+
+Reconnect to your sandbox:
+
+```bash
+sbx run otel-demo
+```
+
+Give Claude the following prompt:
+
+```
+Look at the recommendation service (src/recommendation/).
+It's written in Python and uses gRPC. Explain:
+1. What it does
+2. How it's instrumented with OpenTelemetry
+3. What traces/metrics it exports
+4. Any improvements you'd suggest
+```
+
+> Claude will read the Python files, understand the gRPC service definition,
+> and analyze the OTel instrumentation. This demonstrates the agent working
+> with real production-style code.
+
+---
+
+## 9. Docker Compose inside the sandbox
+
+Each sandbox has its own private Docker daemon. Claude can run `docker compose up`,
+build images, and start containers — none of which appear in your host's `docker ps`.
+
+Give Claude the following prompt:
+
+```
+Start the OpenTelemetry demo using Docker Compose.
+Use `docker compose up -d` with the default compose.yaml.
+Wait for services to be healthy, then:
+1. Show running containers with `docker compose ps`
+2. Confirm the frontend is accessible at localhost:8080
+3. Confirm Jaeger UI is at localhost:16686
+4. Report which services are healthy and which aren't
+```
+
+Or use the prompt file:
+
+```bash
+sbx run otel-demo -- "$(cat prompts/start-stack.txt)"
+```
+
+While Claude works, verify from your host:
+
+```bash
+# Your host Docker — completely empty
+docker ps
+# → Nothing
+
+# But inside the sandbox:
+sbx exec otel-demo -- docker ps
+# → 15+ running containers (frontend, cart, checkout, kafka, postgres, etc.)
+```
+
+> The agent is running a full microservices platform with Kafka, Postgres, Redis,
+> Prometheus, Grafana, Jaeger — but your host Docker is untouched. Two separate worlds.
+
+---
+
+## 10. Port forwarding with `sbx ports`
+
+Sandboxes are network-isolated — your browser can't reach a server inside one by
+default. `sbx ports` punches a hole from a host port to a sandbox port.
+
+### Forward the Astronomy Shop frontend
+
+```bash
+sbx ports otel-demo --publish 8080:8080
+```
+
+Open `http://localhost:8080` — that's the live e-commerce frontend running inside the sandbox.
+
+### Forward Jaeger (tracing UI)
+
+```bash
+sbx ports otel-demo --publish 16686:16686
+```
+
+Open `http://localhost:16686` — browse distributed traces from all services.
+
+### Forward Grafana (dashboards)
+
+```bash
+sbx ports otel-demo --publish 3000:3000
+```
+
+### Check active ports
+
+```bash
+sbx ports otel-demo
+```
+
+### Stop forwarding
+
+```bash
+sbx ports otel-demo --unpublish 8080:8080
+```
+
+> **Gotcha**: services inside the sandbox must bind to `0.0.0.0`, not `127.0.0.1`.
+> Published ports don't survive a sandbox stop/restart — re-run `sbx ports` after restarting.
+
+---
+
+## 11. Network policies
+
+Every sandbox routes outbound HTTP/HTTPS through a host-side proxy that enforces
+access rules you define.
+
+| Policy      | Description                                                                          |
+|-------------|--------------------------------------------------------------------------------------|
+| Open        | All traffic allowed — no restrictions                                                |
+| Balanced    | Default deny, with a broad allow-list covering AI APIs, Docker Hub, pip, npm, GitHub |
+| Locked Down | Everything blocked; you explicitly allow what you need                               |
+
+### Inspect current rules
+
+```bash
+sbx policy ls
+```
+
+### See what the sandbox is hitting
 
 ```bash
 sbx policy log
 ```
 
-> *Note: Show the allowed list (Docker Hub registry, anthropic API) and point out there are NO denied requests because the agent only did legitimate things. Clean bill of health.*
-
-**Step 5 — Forward port and show the running app**
+### Allow additional hosts
 
 ```bash
-sbx ports <sandbox-name> --publish 8080:8080
-# Open http://localhost:8080 — the Astronomy Shop frontend
+sbx policy allow network "*.npmjs.org,*.pypi.org,files.pythonhosted.org"
 ```
 
-> *Note: A full e-commerce site with product catalog, cart, checkout — all running inside the sandbox. Port forward lets you see it from your browser.*
-
-**Step 6 — Cleanup**
+### Block a host
 
 ```bash
-sbx rm <sandbox-name>
-# Sandbox gone. All containers, images, volumes inside it — destroyed.
-# Your host Docker remains untouched.
+sbx policy deny network ads.example.com
 ```
 
 ---
 
-## Demo 2: Attack Simulation — What Gets Blocked
+## 12. Branch mode
 
-**What you're showing:** A malicious script tries to exfiltrate data and scan your network. On a bare host it succeeds. In the sandbox it's blocked at every layer. The audit log catches everything.
+Branch mode gives Claude its own Git worktree and branch, isolated from your main
+working tree. You keep working normally; Claude works on its branch; you review the
+diff and merge when ready.
 
-The `exfil.sh` script is included in the repo — it simulates credential theft, data exfiltration, C2 callbacks, and internal network scanning.
+```bash
+sbx run otel-demo --branch=improve-recommendation
+```
 
-### Flow
+Give Claude:
 
-**Step 1 — Show what happens on a bare host (DON'T actually run — just explain)**
+```
+The recommendation service (src/recommendation/) currently picks products randomly.
+Improve it to use a simple collaborative filtering approach:
+- Track which products are frequently bought together
+- Recommend products based on what's in the user's cart
+Commit your changes with a descriptive message.
+```
 
-> *Note: "If an agent ran this on your bare machine, here's what would happen: it reads your AWS keys, curls them to an external server, pings a C2 IP, and scans your internal network. No alerts. No logs. Nothing stops it."*
+Or use the prompt file:
 
-**Step 2 — Launch a shell sandbox and run the attack**
+```bash
+sbx run otel-demo --branch=improve-recommendation -- "$(cat prompts/improve-recommendation.txt)"
+```
+
+When done, review and push:
+
+```bash
+git diff main..improve-recommendation
+git push origin improve-recommendation
+```
+
+---
+
+## 13. Attack simulation
+
+This section demonstrates what the sandbox blocks. The `exfil.sh` script simulates:
+- Credential theft (reading ~/.aws, ~/.ssh)
+- Data exfiltration to an external server
+- C2 server callback
+- Internal network scanning
+
+### Run the attack inside a sandbox
 
 ```bash
 sbx run shell
@@ -259,23 +460,15 @@ curl: (7) Failed to connect to 192.168.1.1 port 8080
 === ATTACK COMPLETE ===
 ```
 
-> *Note: Walk through each failure:*
-> - *"Credentials? Not mounted. Agent can't see them."*
-> - *"Exfiltration? Domain blocked by network policy."*
-> - *"C2 ping? Tool not even available, and network would block it anyway."*
-> - *"Internal network scan? Can't reach your LAN."*
-
-**Step 3 — Show the audit log (from host terminal)**
+Every blocked attempt is logged:
 
 ```bash
 sbx policy log
 ```
 
-> *Note: "Every blocked attempt is logged with timestamp, destination, and count. Your security team can see exactly what the agent tried. This is the Clarity in the 3Cs."*
+### Layered defense
 
-**Step 4 — Install ping and try again (show layered defense)**
-
-Inside the sandbox:
+Even after installing tools (allowed — package managers are on the allowlist), the network policy still blocks:
 
 ```bash
 apt-get install -y iputils-ping
@@ -283,29 +476,126 @@ ping -c 3 198.51.100.1
 # → Network is unreachable
 ```
 
-> *Note: "Even after installing the tool (which is allowed — package managers are on the allowlist), the network policy still blocks the actual connection. Two independent layers."*
+---
 
-**Step 5 — Check audit log again**
+## 14. Debugging with `sbx exec`
 
-```bash
-sbx policy log
-# → Now shows: 3 blocked attempts to 198.51.100.1
-# → Count matches -c 3 from the ping command exactly
-```
-
-> *Note: "The audit log even captures the count — 3 attempts, matching exactly what the script tried. Full forensics."*
-
-**Step 6 — Cleanup**
+`sbx exec` opens a shell inside a running sandbox. Run from your host terminal:
 
 ```bash
-sbx rm <sandbox-name>
+sbx exec -it otel-demo bash
 ```
 
-> *Note: "Sandbox destroyed. Host was never at risk. That's the whole point."*
+From inside:
+
+```bash
+docker ps                    # what containers are running?
+docker compose logs cart     # check cart service logs
+curl localhost:8080          # is the frontend up?
+```
+
+Type `exit` to leave. The Claude session keeps running.
+
+### One-off command
+
+```bash
+sbx exec -it otel-demo bash -c "docker compose ps --format 'table {{.Name}}\t{{.Status}}'"
+```
 
 ---
 
-## Takeaway: The 3Cs
+## Appendix A: Prompt library
+
+### Explore the codebase
+
+```
+Explore this repository and produce a technical overview covering:
+1. Architecture and tech stack (list every microservice, its language, and role)
+2. How data flows through the system end to end (user → frontend → backend services)
+3. How to run the project with Docker Compose
+4. What observability is configured (traces, metrics, logs)
+5. The top 3 areas you'd investigate first if debugging a production incident
+```
+
+### Start the full stack
+
+```
+Start the OpenTelemetry demo with `docker compose up -d`.
+Wait for services to be healthy, then confirm:
+- Frontend at localhost:8080
+- Jaeger at localhost:16686
+- Grafana at localhost:3000
+Report which services are up and which failed.
+```
+
+### Improve a service
+
+```
+The recommendation service (src/recommendation/) picks products randomly.
+Improve it to recommend products based on the user's cart contents.
+Use simple collaborative filtering. Run the tests after your changes.
+Commit with a descriptive message.
+```
+
+### Add a health check endpoint
+
+```
+The frontend-proxy (src/frontend-proxy/) doesn't have a dedicated health endpoint.
+Add a /health route that returns JSON with status and uptime.
+Make sure it's included in the Docker healthcheck in compose.yaml.
+```
+
+### Fix observability gaps
+
+```
+Review the checkout service (src/checkout/) and identify any missing
+OpenTelemetry instrumentation:
+- Are all outbound gRPC calls traced?
+- Are errors recorded as span events?
+- Are there any untraced code paths?
+Add the missing instrumentation and verify traces appear in Jaeger.
+```
+
+---
+
+## Appendix B: CLI quick reference
+
+```bash
+# ── Lifecycle ──────────────────────────────────────────────────────────────────
+sbx run --name=otel-demo claude .        # create and attach to a named sandbox
+sbx run otel-demo                        # reconnect to an existing sandbox
+sbx run otel-demo --branch=my-feature    # branch mode
+sbx create claude .                      # create without attaching
+sbx ls                                   # list sandboxes
+sbx stop otel-demo                       # pause
+sbx rm otel-demo                         # delete sandbox + VM
+
+# ── Attach & shell ─────────────────────────────────────────────────────────────
+sbx exec -it otel-demo bash              # shell inside sandbox
+sbx exec -d otel-demo bash -c "cmd"      # one-off command
+
+# ── Port forwarding ────────────────────────────────────────────────────────────
+sbx ports otel-demo --publish 8080:8080  # host:8080 → sandbox:8080
+sbx ports otel-demo                      # show active forwarding
+sbx ports otel-demo --unpublish 8080:8080
+
+# ── Network policies ───────────────────────────────────────────────────────────
+sbx policy ls                            # list active rules
+sbx policy log                           # show connection log
+sbx policy allow network example.com     # allow a host
+sbx policy deny network evil.com         # block a host
+
+# ── Credentials ────────────────────────────────────────────────────────────────
+sbx secret set -g github                 # store token globally
+sbx secret ls                            # list stored secrets
+
+# ── Dashboard ──────────────────────────────────────────────────────────────────
+sbx                                      # open interactive TUI
+```
+
+---
+
+## The 3Cs — Takeaway
 
 | C | Principle | How |
 |---|-----------|-----|
