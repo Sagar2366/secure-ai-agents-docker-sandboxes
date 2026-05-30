@@ -6,7 +6,7 @@
 
 ## What you'll need
 
-- A Kiro account (free tier available)
+- An Anthropic API key (or Claude subscription)
 - A GitHub account with a token that has permissions to push and pull
 - macOS on Apple Silicon or Windows 11
 
@@ -53,7 +53,7 @@ Grafana, and Jaeger. Real-world complexity that justifies sandboxing.
 
 ## 1. How Docker Sandboxes work
 
-When you run `sbx run kiro`, Docker Sandboxes:
+When you run `sbx run claude`, Docker Sandboxes:
 
 1. Spins up a **lightweight microVM** — its own Linux kernel, not just a container namespace.
 2. Gives the VM a **private Docker daemon**, so the agent can run `docker build` or `docker compose up` without touching your host Docker.
@@ -142,7 +142,10 @@ automatically. The agent can make authenticated API calls but can never read, lo
 exfiltrate the raw credential.
 
 ```bash
-# Store GitHub token (global — available to all sandboxes)
+# Store Anthropic API key (global — available to all sandboxes)
+sbx secret set -g anthropic
+
+# Store GitHub token
 echo "$(gh auth token)" | sbx secret set -g github
 
 # Verify
@@ -167,7 +170,7 @@ sbx secret ls
 
 ```bash
 cd opentelemetry-demo
-sbx create --name=otel-demo kiro .
+sbx create claude --name otel-demo .
 ```
 
 Confirm it was created:
@@ -176,7 +179,7 @@ Confirm it was created:
 sbx ls
 ```
 
-Attach to it:
+Launch Claude Code inside the sandbox:
 
 ```bash
 sbx run otel-demo
@@ -186,7 +189,7 @@ sbx run otel-demo
 
 ## 6. Orient yourself
 
-Give Kiro the following prompt:
+Give Claude the following prompt:
 
 ```
 Explore this codebase and give me:
@@ -196,7 +199,7 @@ Explore this codebase and give me:
 4. What observability tools are included (tracing, metrics, logs)
 ```
 
-Kiro will read compose files, source directories, and report back. Because the
+Claude will read compose files, source directories, and report back. Because the
 workspace is mounted directly into the VM, the agent sees your actual files — including
 any changes you make on the host while it's running.
 
@@ -239,7 +242,7 @@ Reconnect to your sandbox:
 sbx run otel-demo
 ```
 
-Give Kiro the following prompt:
+Give Claude the following prompt:
 
 ```
 Look at the recommendation service (src/recommendation/).
@@ -250,7 +253,7 @@ It's written in Python and uses gRPC. Explain:
 4. Any improvements you'd suggest
 ```
 
-> Kiro will read the Python files, understand the gRPC service definition,
+> Claude will read the Python files, understand the gRPC service definition,
 > and analyze the OTel instrumentation. This demonstrates the agent working
 > with real production-style code.
 
@@ -261,7 +264,7 @@ It's written in Python and uses gRPC. Explain:
 Each sandbox has its own private Docker daemon. The agent can run `docker compose up`,
 build images, and start containers — none of which appear in your host's `docker ps`.
 
-Give Kiro the following prompt:
+Give Claude the following prompt:
 
 ```
 Start the OpenTelemetry demo using Docker Compose.
@@ -273,7 +276,7 @@ Wait for services to be healthy, then:
 4. Report which services are healthy and which aren't
 ```
 
-While Kiro works, verify from your host:
+While Claude works, verify from your host:
 
 ```bash
 # Your host Docker — completely empty
@@ -381,7 +384,7 @@ diff and merge when ready.
 sbx run otel-demo --branch=improve-recommendation
 ```
 
-Give Kiro:
+Give Claude:
 
 ```
 The recommendation service (src/recommendation/) currently picks products randomly.
@@ -470,7 +473,7 @@ docker compose logs cart     # check cart service logs
 curl localhost:8080          # is the frontend up?
 ```
 
-Type `exit` to leave. The Kiro session keeps running.
+Type `exit` to leave. The Claude session keeps running.
 
 ### One-off command
 
