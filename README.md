@@ -6,7 +6,7 @@
 
 ## What you'll need
 
-- A paid Claude subscription (or any supported agent API key)
+- A Kiro account (free tier available)
 - A GitHub account with a token that has permissions to push and pull
 - macOS on Apple Silicon or Windows 11
 
@@ -15,9 +15,9 @@
 By the end of this guide you'll be able to:
 
 - Install and configure the `sbx` CLI
-- Run Claude autonomously inside an isolated microVM sandbox
+- Run an AI agent autonomously inside an isolated microVM sandbox
 - Store credentials securely and have them injected automatically
-- Use branch mode to let Claude work on its own Git branch
+- Use branch mode to let the agent work on its own Git branch
 - Run Docker Compose inside the sandbox (private Docker daemon)
 - Forward live ports from a sandbox to your browser
 - Manage network policies so the agent can only reach what you allow
@@ -53,15 +53,15 @@ Grafana, and Jaeger. Real-world complexity that justifies sandboxing.
 
 ## 1. How Docker Sandboxes work
 
-When you run `sbx run claude`, Docker Sandboxes:
+When you run `sbx run kiro`, Docker Sandboxes:
 
 1. Spins up a **lightweight microVM** — its own Linux kernel, not just a container namespace.
-2. Gives the VM a **private Docker daemon**, so Claude can run `docker build` or `docker compose up` without touching your host Docker.
+2. Gives the VM a **private Docker daemon**, so the agent can run `docker build` or `docker compose up` without touching your host Docker.
 3. **Mounts your workspace directory** at its exact host path inside the VM. File changes are instant in both directions — no copy-on-write delay.
-4. Routes all HTTP/HTTPS traffic from the VM through a **host-side proxy** that enforces your network policy and injects API credentials. Claude never sees raw credentials.
-5. Starts Claude with `--dangerously-skip-permissions` so it can act autonomously without prompting you on every file change.
+4. Routes all HTTP/HTTPS traffic from the VM through a **host-side proxy** that enforces your network policy and injects API credentials. The agent never sees raw credentials.
+5. Starts the agent with autonomous permissions so it can act without prompting you on every file change.
 
-The result: Claude can build images, install packages, run tests, and edit your code —
+The result: the agent can build images, install packages, run tests, and edit your code —
 and none of that can escape the VM to touch your host system, your other containers,
 or any network destination you haven't explicitly allowed.
 
@@ -71,7 +71,7 @@ Your machine
 ├── Host filesystem       ← workspace dir shared (read/write); nothing else
 │
 └── Sandbox (microVM)
-    ├── Private Docker daemon  ← Claude builds here
+    ├── Private Docker daemon  ← agent builds here
     ├── /your/workspace        ← live-mounted from host
     └── Outbound HTTP proxy    ← enforces network policy, injects creds
 ```
@@ -136,9 +136,9 @@ Docker Hub, GitHub, and container registries out of the box.
 ## 4. Secrets and credentials
 
 `sbx` has a built-in secrets manager that stores credentials in your OS keychain —
-never in plain text on disk or inside the VM. When Claude makes an outbound request
+never in plain text on disk or inside the VM. When the agent makes an outbound request
 that needs authentication, the host-side proxy intercepts it and injects the credential
-automatically. Claude can make authenticated API calls but can never read, log, or
+automatically. The agent can make authenticated API calls but can never read, log, or
 exfiltrate the raw credential.
 
 ```bash
@@ -167,7 +167,7 @@ sbx secret ls
 
 ```bash
 cd opentelemetry-demo
-sbx create --name=otel-demo claude .
+sbx create --name=otel-demo kiro .
 ```
 
 Confirm it was created:
@@ -176,28 +176,17 @@ Confirm it was created:
 sbx ls
 ```
 
-Now attach to it:
+Attach to it:
 
 ```bash
 sbx run otel-demo
 ```
 
-### Log in to Claude
-
-Once the sandbox starts, authenticate with:
-
-```
-/login
-```
-
-> **Note**: Copy the login URL manually if the browser doesn't open automatically.
-> Complete the OAuth flow and paste the returned code back. You only need to do this once.
-
 ---
 
 ## 6. Orient yourself
 
-Give Claude the following prompt:
+Give Kiro the following prompt:
 
 ```
 Explore this codebase and give me:
@@ -207,14 +196,13 @@ Explore this codebase and give me:
 4. What observability tools are included (tracing, metrics, logs)
 ```
 
-Claude will read compose files, source directories, and report back. Because the
-workspace is mounted directly into the VM, Claude sees your actual files — including
+Kiro will read compose files, source directories, and report back. Because the
+workspace is mounted directly into the VM, the agent sees your actual files — including
 any changes you make on the host while it's running.
 
 ### Controlling the session
 
 - Press **`Ctrl-C` twice** to exit the session and drop back to your host terminal.
-- Type **`!`** before any command inside Claude to run it as a shell command — e.g. `!ls` or `!docker ps`.
 
 ---
 
@@ -251,7 +239,7 @@ Reconnect to your sandbox:
 sbx run otel-demo
 ```
 
-Give Claude the following prompt:
+Give Kiro the following prompt:
 
 ```
 Look at the recommendation service (src/recommendation/).
@@ -262,7 +250,7 @@ It's written in Python and uses gRPC. Explain:
 4. Any improvements you'd suggest
 ```
 
-> Claude will read the Python files, understand the gRPC service definition,
+> Kiro will read the Python files, understand the gRPC service definition,
 > and analyze the OTel instrumentation. This demonstrates the agent working
 > with real production-style code.
 
@@ -270,10 +258,10 @@ It's written in Python and uses gRPC. Explain:
 
 ## 9. Docker Compose inside the sandbox
 
-Each sandbox has its own private Docker daemon. Claude can run `docker compose up`,
+Each sandbox has its own private Docker daemon. The agent can run `docker compose up`,
 build images, and start containers — none of which appear in your host's `docker ps`.
 
-Give Claude the following prompt:
+Give Kiro the following prompt:
 
 ```
 Start the OpenTelemetry demo using Docker Compose.
@@ -285,13 +273,7 @@ Wait for services to be healthy, then:
 4. Report which services are healthy and which aren't
 ```
 
-Or use the prompt file:
-
-```bash
-sbx run otel-demo -- "$(cat prompts/start-stack.txt)"
-```
-
-While Claude works, verify from your host:
+While Kiro works, verify from your host:
 
 ```bash
 # Your host Docker — completely empty
@@ -391,15 +373,15 @@ sbx policy deny network ads.example.com
 
 ## 12. Branch mode
 
-Branch mode gives Claude its own Git worktree and branch, isolated from your main
-working tree. You keep working normally; Claude works on its branch; you review the
+Branch mode gives the agent its own Git worktree and branch, isolated from your main
+working tree. You keep working normally; the agent works on its branch; you review the
 diff and merge when ready.
 
 ```bash
 sbx run otel-demo --branch=improve-recommendation
 ```
 
-Give Claude:
+Give Kiro:
 
 ```
 The recommendation service (src/recommendation/) currently picks products randomly.
@@ -407,12 +389,6 @@ Improve it to use a simple collaborative filtering approach:
 - Track which products are frequently bought together
 - Recommend products based on what's in the user's cart
 Commit your changes with a descriptive message.
-```
-
-Or use the prompt file:
-
-```bash
-sbx run otel-demo --branch=improve-recommendation -- "$(cat prompts/improve-recommendation.txt)"
 ```
 
 When done, review and push:
@@ -494,7 +470,7 @@ docker compose logs cart     # check cart service logs
 curl localhost:8080          # is the frontend up?
 ```
 
-Type `exit` to leave. The Claude session keeps running.
+Type `exit` to leave. The Kiro session keeps running.
 
 ### One-off command
 
@@ -562,10 +538,10 @@ Add the missing instrumentation and verify traces appear in Jaeger.
 
 ```bash
 # ── Lifecycle ──────────────────────────────────────────────────────────────────
-sbx run --name=otel-demo claude .        # create and attach to a named sandbox
+sbx run --name=otel-demo kiro .          # create and attach to a named sandbox
 sbx run otel-demo                        # reconnect to an existing sandbox
 sbx run otel-demo --branch=my-feature    # branch mode
-sbx create claude .                      # create without attaching
+sbx create kiro .                        # create without attaching
 sbx ls                                   # list sandboxes
 sbx stop otel-demo                       # pause
 sbx rm otel-demo                         # delete sandbox + VM

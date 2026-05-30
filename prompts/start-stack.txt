@@ -1,9 +1,0 @@
-Start the OpenTelemetry demo with Docker Compose.
-
-Steps:
-1. Run `docker compose up -d` using the default compose.yaml
-2. Wait for services to become healthy (check with `docker compose ps`)
-3. Confirm the frontend is accessible: `curl -s http://localhost:8080 | head -20`
-4. Confirm Jaeger is accessible: `curl -s http://localhost:16686`
-5. Report which services are running and which failed to start
-6. If any service failed, show its logs with `docker compose logs <service>`
